@@ -1,0 +1,91 @@
+name: Try app approve and merge
+
+# Manual only. Answers: does a GitHub App's approving review satisfy a ruleset's
+# required_approving_review_count? The merge attempts are the real evidence —
+# mergeable_state is informative but undocumented, so it is only printed.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to test against
+        required: true
+        default: "1"
+
+# The default GITHUB_TOKEN is deliberately never used for anything here: it is
+# subject to the separate "Allow GitHub Actions to create and approve pull
+# requests" org setting, which would confound the result.
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # The exact action Phase 5 will use, so this rehearses that step too.
+      - name: Mint an App installation token
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.TEST_APP_ID }}
+          private-key: ${{ secrets.TEST_APP_KEY }}
+
+      - name: Who am I
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -u
+          echo "## Identity" >> "$GITHUB_STEP_SUMMARY"
+          gh api /installation/repositories --jq '.repositories[].full_name' \
+            | sed 's/^/installed on: /' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Before approval — mergeable_state and a merge attempt
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -u
+          {
+            echo "## Before approval"
+            echo '```'
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" \
+              --jq '"mergeable=\(.mergeable) mergeable_state=\(.mergeable_state)"' || true
+            echo "--- merge attempt (expected to FAIL) ---"
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/merge" \
+              -f merge_method=merge 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Approve as the App
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -u
+          {
+            echo "## Approval"
+            echo '```'
+            gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
+              -f event=APPROVED -f body='Approving as the App, to see whether this counts.' \
+              --jq '"review \(.id) state=\(.state) by=\(.user.login) (\(.user.type))"' 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: After approval — mergeable_state and a merge attempt
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -u
+          # GitHub recomputes mergeability asynchronously after a review lands.
+          sleep 10
+          {
+            echo "## After approval"
+            echo '```'
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" \
+              --jq '"mergeable=\(.mergeable) mergeable_state=\(.mergeable_state)"' || true
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
+              --jq '.[] | "review by \(.user.login) (\(.user.type)): \(.state)"' || true
+            echo "--- merge attempt (THE ANSWER: success => App approvals count) ---"
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$PR/merge" \
+              -f merge_method=merge 2>&1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
