@@ -53,7 +53,7 @@ jobs:
 
           say "approve as the App (full response body)"
           gh api -X POST "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
-            -f event=APPROVED -f body='Approving as the App, to see whether this counts.' || true
+            -f event=APPROVE -f body='Approving as the App, to see whether this counts.' || true
 
           say "reviews now on the PR"
           gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/reviews" \
